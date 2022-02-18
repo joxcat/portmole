@@ -24,44 +24,56 @@ pub async fn handle_server(args: ServerArgs) -> EyreResult<()> {
 }
 
 async fn spawn_tcp_listener(address: &str, port: u32) -> EyreResult<()> {
-    log::info!("TCP Listener spawn on {}:{}", address, port);
+    let server_address = format!("{}:{}", address, port);
 
-    let listener = TcpListener::bind(&format!("{}:{}", address, port)).await?;
+    match TcpListener::bind(&server_address).await {
+        Ok(listener) => loop {
+            log::info!("TCP Listener spawn on {}", server_address);
 
-    loop {
-        match listener.accept().await {
-            Ok((_stream, src)) => {
-                log::debug!("TCP Connection from {} to {}:{}", src, address, port);
-            }
-            Err(e) => {
-                log::error!("TCP Error on {}:{} => {}", address, port, e);
-            }
-        }
+            match listener.accept().await {
+                Ok((_stream, src)) => {
+                    log::debug!("TCP Connection from {} to {}", src, server_address);
+                }
+                Err(e) => {
+                    log::error!("TCP Error on {} => {}", server_address, e);
+                }
+            };
+        },
+        Err(_err) => log::debug!("TCP address already used {}", server_address),
     }
+
+    Ok(())
 }
 
 async fn spawn_udp_listener(address: &str, port: u32) -> EyreResult<()> {
-    log::info!("UDP Listener spawn on {}:{}", address, port);
+    let server_address = format!("{}:{}", address, port);
 
-    let listener = UdpSocket::bind(&format!("{}:{}", address, port)).await?;
-    let mut buf = [0; MSG_BUFFER_LENGTH];
+    match UdpSocket::bind(&server_address).await {
+        Ok(listener) => {
+            log::info!("UDP Listener spawn on {}", server_address);
+            let mut buf = [0; MSG_BUFFER_LENGTH];
 
-    loop {
-        match listener.recv_from(&mut buf).await {
-            Ok((len, src)) => {
-                log::debug!("UDP Connection from {} to {}:{}", src, address, port);
+            loop {
+                match listener.recv_from(&mut buf).await {
+                    Ok((len, src)) => {
+                        log::debug!("UDP Connection from {} to {}", src, server_address);
 
-                if &buf[..len] == HELLO_MSG {
-                    listener.send_to(ACK_MSG, &src).await?;
-                } else {
-                    listener.send_to(EMPTY_MSG, &src).await?;
-                }
+                        if &buf[..len] == HELLO_MSG {
+                            listener.send_to(ACK_MSG, &src).await?;
+                        } else {
+                            listener.send_to(EMPTY_MSG, &src).await?;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("UDP Error on {} => {}", server_address, e);
+                    }
+                };
             }
-            Err(e) => {
-                log::error!("UDP Error on {}:{} => {}", address, port, e);
-            }
-        };
+        }
+        Err(_err) => log::debug!("UDP address already used {}", server_address),
     }
+
+    Ok(())
 }
 
 async fn spawn_tcp_udp_listener(

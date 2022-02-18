@@ -1,7 +1,12 @@
 [package]
-name = "port-tester"
-version = "0.1.0"
+name = "portmole"
+version = "1.0.0"
 edition = "2021"
+authors = [
+    "Johan Planchon <dev@planchon.xyz>"
+]
+license = "MIT"
+description = "Client and server to discover filtered TCP and UDP ports on a network"
 
 [dependencies]
 # Cli

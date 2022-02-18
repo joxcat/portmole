@@ -5,14 +5,14 @@ const MIN_PORT: u32 = 1;
 const MAX_PORT: u32 = 65535;
 
 #[derive(Parser, Debug)]
-#[clap(author, version)]
+#[clap(author, version, about)]
 pub enum Commands {
     Server(ServerArgs),
     Client(ClientArgs),
 }
 
 #[derive(clap::Args, Debug)]
-#[clap(author, version, about)]
+#[clap(author, version, about = "Server to expose ports")]
 pub struct ServerArgs {
     #[clap(
         short,
@@ -26,7 +26,7 @@ pub struct ServerArgs {
 }
 
 #[derive(clap::Args, Debug)]
-#[clap(author, version, about)]
+#[clap(author, version, about = "Client to test remote ports")]
 pub struct ClientArgs {
     #[clap(
         short,
