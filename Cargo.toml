@@ -1,0 +1,21 @@
+[package]
+name = "port-tester"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Cli
+clap = { version = "^3.1", features = ["derive"] }
+
+# IO & Async
+tokio = { version = "^1.17", features = ["net", "rt-multi-thread", "time"] }
+futures = "^0.3"
+trust-dns-resolver = "^0.20"
+
+# Logging
+simple_logger = "^2.1"
+log = "^0.4"
+
+# Errors handling
+eyre = "^0.6"
+color-eyre = "^0.5"
