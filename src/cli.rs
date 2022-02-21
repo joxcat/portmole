@@ -4,6 +4,8 @@ use std::num::ParseIntError;
 const MIN_PORT: u32 = 1;
 const MAX_PORT: u32 = 65535;
 
+/* @TODO Add udp and tcp option */
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about)]
 pub enum Commands {
@@ -37,7 +39,7 @@ pub struct ClientArgs {
     pub port_range: (u32, u32),
     #[clap(short = 's', long)]
     pub server: String,
-    #[clap(short, long, default_value = "500")]
+    #[clap(short, long, default_value = "1000")]
     pub timeout: u64,
     #[clap(short, long, parse(from_occurrences))]
     pub verbose: usize,

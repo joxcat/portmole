@@ -11,11 +11,25 @@ use trust_dns_resolver::{
     AsyncResolver,
 };
 
-use crate::{setup_logging, ClientArgs, EyreResult, ACK_MSG, HELLO_MSG, MSG_BUFFER_LENGTH};
+use crate::{
+    setup_logging, ClientArgs, EyreResult, ACK_MSG, HELLO_MSG, MAX_OPEN_FILES_COUNT,
+    MSG_BUFFER_LENGTH,
+};
 
-pub async fn handle_client(args: ClientArgs) -> EyreResult<()> {
+#[derive(Debug, Copy, Clone)]
+pub enum ClientResult {
+    Success,
+    SuccessButBadACK,
+    CannotConnect,
+    Timeout,
+    Unknown,
+    Finished,
+}
+
+pub async fn handle_client(args: ClientArgs) -> EyreResult<ClientResult> {
     setup_logging(args.verbose)?;
 
+    // Resolve domain to an IP
     let resolver = AsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())?;
     let resp = resolver
         .lookup_ip(args.server.clone())
@@ -28,28 +42,47 @@ pub async fn handle_client(args: ClientArgs) -> EyreResult<()> {
 
     log::debug!("Server IP resolved from {} to {}", args.server, address);
 
-    future::join_all(
-        (args.port_range.0..=args.port_range.1).map(|port| {
-            spawn_tcp_udp_connection(address, port, Duration::from_millis(args.timeout))
-        }),
-    )
-    .await
-    .into_iter()
-    .try_for_each(|res| {
-        let res = res?;
-        let res_tcp = res.0;
-        let res_udp = res.1;
-        EyreResult::from_iter([res_tcp, res_udp])
-    })?;
+    let (min, max) = args.port_range;
 
-    Ok(())
+    let mut port_count = (max + 1) - min;
+    let mut first_port = min;
+
+    while port_count > 0 {
+        let min = first_port;
+        let max = first_port
+            + if port_count > MAX_OPEN_FILES_COUNT {
+                MAX_OPEN_FILES_COUNT
+            } else {
+                port_count
+            };
+
+        future::join_all((min..max).map(|port| {
+            spawn_tcp_udp_connection(address, port, Duration::from_millis(args.timeout))
+        }))
+        .await
+        .into_iter()
+        .try_for_each(|res| {
+            let res = res?;
+            let res_tcp = res.0.map(|_c| ());
+            let res_udp = res.1.map(|_c| ());
+            EyreResult::from_iter([res_tcp, res_udp])
+        })?;
+
+        first_port = max;
+        port_count -= max - min;
+
+        // Sleep some time to let the server spawn the listeners
+        time::sleep(Duration::from_millis(500)).await;
+    }
+
+    Ok(ClientResult::Finished)
 }
 
 async fn spawn_tcp_udp_connection(
     address: IpAddr,
     port: u32,
     timeout: Duration,
-) -> EyreResult<(EyreResult<()>, EyreResult<()>)> {
+) -> EyreResult<(EyreResult<ClientResult>, EyreResult<ClientResult>)> {
     Ok(future::join(
         spawn_tcp_connection(address, port, timeout),
         spawn_udp_connection(address, port, timeout),
@@ -57,30 +90,41 @@ async fn spawn_tcp_udp_connection(
     .await)
 }
 
-async fn spawn_tcp_connection(address: IpAddr, port: u32, timeout: Duration) -> EyreResult<()> {
+async fn spawn_tcp_connection(
+    address: IpAddr,
+    port: u32,
+    timeout: Duration,
+) -> EyreResult<ClientResult> {
     let sever_address = format!("{}:{}", address, port);
 
     match time::timeout(timeout, TcpStream::connect(&sever_address)).await {
-        Ok(tcp_stream) => {
-            match tcp_stream {
-                Ok(stream) => log::info!("TCP Connection succeed to {}", stream.peer_addr()?),
-                Err(err) => {
-                    log::trace!("TCP Cannot connect to {} because {}", sever_address, err);
-                    log::debug!("TCP Cannot connect to {}", sever_address);
-                }
-            };
+        Ok(tcp_stream) => match tcp_stream {
+            Ok(stream) => {
+                log::info!("TCP Connection succeed to {}", stream.peer_addr()?);
+                Ok(ClientResult::Success)
+            }
+            Err(err) => {
+                log::trace!("TCP Cannot connect to {} because {}", sever_address, err);
+                log::debug!("TCP Cannot connect to {}", sever_address);
+                Ok(ClientResult::CannotConnect)
+            }
+        },
+        Err(_elapsed) => {
+            log::debug!(
+                "TCP Cannot connect to {}, timeout after {}ms",
+                sever_address,
+                timeout.as_millis()
+            );
+            Ok(ClientResult::Timeout)
         }
-        Err(_elapsed) => log::debug!(
-            "TCP Cannot connect to {}, timeout after {}ms",
-            sever_address,
-            timeout.as_millis()
-        ),
     }
-
-    Ok(())
 }
 
-async fn spawn_udp_connection(address: IpAddr, port: u32, timeout: Duration) -> EyreResult<()> {
+async fn spawn_udp_connection(
+    address: IpAddr,
+    port: u32,
+    timeout: Duration,
+) -> EyreResult<ClientResult> {
     let socket = UdpSocket::bind("127.0.0.1:0").await?;
     let server_address = format!("{}:{}", address, port);
 
@@ -91,12 +135,25 @@ async fn spawn_udp_connection(address: IpAddr, port: u32, timeout: Duration) -> 
             socket.send(HELLO_MSG).await?;
             match time::timeout(timeout, socket.recv(&mut buf)).await {
                 Ok(recv_result) => {
-                    let len = recv_result?;
+                    let len = match recv_result {
+                        Ok(recv_result) => recv_result,
+                        Err(err) => {
+                            log::trace!(
+                                "UDP Cannot receive from {} because {}",
+                                server_address,
+                                err
+                            );
+                            log::debug!("UDP Cannot receive from {}", server_address);
+                            return Ok(ClientResult::CannotConnect);
+                        }
+                    };
 
                     if &buf[..len] == ACK_MSG {
                         log::info!("UDP Connection succeed to {}", server_address);
+                        Ok(ClientResult::Success)
                     } else {
                         log::debug!("UDP Connection successful but ACK message is not good");
+                        Ok(ClientResult::SuccessButBadACK)
                     }
                 }
                 Err(_elapsed) => {
@@ -105,13 +162,14 @@ async fn spawn_udp_connection(address: IpAddr, port: u32, timeout: Duration) -> 
                         server_address,
                         timeout.as_millis()
                     );
+                    Ok(ClientResult::Timeout)
                 }
             }
         }
         Err(err) => {
             log::trace!("UDP Cannot connect to {} because {}", server_address, err);
             log::debug!("UDP Cannot connect to {}", server_address);
+            Ok(ClientResult::Unknown)
         }
     }
-    Ok(())
 }
