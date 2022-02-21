@@ -1,11 +1,11 @@
-use std::{net::IpAddr, time::Duration};
+use std::{
+    net::{IpAddr, ToSocketAddrs},
+    time::Duration,
+};
 
 use eyre::{Context, ContextCompat};
 use futures::future;
-use tokio::{
-    net::{TcpStream, UdpSocket},
-    time,
-};
+use tokio::{net::UdpSocket, time};
 use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
     AsyncResolver,
@@ -97,18 +97,17 @@ async fn spawn_tcp_connection(
 ) -> EyreResult<ClientResult> {
     let sever_address = format!("{}:{}", address, port);
 
-    match time::timeout(timeout, TcpStream::connect(&sever_address)).await {
-        Ok(tcp_stream) => match tcp_stream {
-            Ok(stream) => {
-                log::info!("TCP Connection succeed to {}", stream.peer_addr()?);
-                Ok(ClientResult::Success)
-            }
-            Err(err) => {
-                log::trace!("TCP Cannot connect to {} because {}", sever_address, err);
-                log::debug!("TCP Cannot connect to {}", sever_address);
-                Ok(ClientResult::CannotConnect)
-            }
-        },
+    match std::net::TcpStream::connect_timeout(
+        &(address, port as u16)
+            .to_socket_addrs()?
+            .next()
+            .wrap_err("Cannot convert address + port to socket address")?,
+        timeout,
+    ) {
+        Ok(stream) => {
+            log::info!("TCP Connection succeed to {}", stream.peer_addr()?);
+            Ok(ClientResult::Success)
+        }
         Err(_elapsed) => {
             log::debug!(
                 "TCP Cannot connect to {}, timeout after {}ms",

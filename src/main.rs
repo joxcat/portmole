@@ -27,7 +27,8 @@ fn setup_logging(verbosity: usize) -> EyreResult<()> {
             0 => log::LevelFilter::Off,
             1 => log::LevelFilter::Error,
             2 => log::LevelFilter::Info,
-            _ => log::LevelFilter::Debug,
+            3 => log::LevelFilter::Debug,
+            _ => log::LevelFilter::Trace,
         })
         .with_module_level("trust_dns_proto", log::LevelFilter::Error)
         .with_module_level("trust_dns_resolver", log::LevelFilter::Error)
