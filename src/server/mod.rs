@@ -51,20 +51,20 @@ async fn spawn_tcp_listener(address: &str, port: u32) -> EyreResult<ServerResult
     let server_address = format!("{}:{}", address, port);
 
     match TcpListener::bind(&server_address).await {
-        Ok(listener) => loop {
+        Ok(listener) => {
             log::info!("TCP Listener spawn on {}", server_address);
 
             match listener.accept().await {
                 Ok((_stream, src)) => {
                     log::debug!("TCP Connection from {} to {}", src, server_address);
-                    return Ok(ServerResult::Success);
+                    Ok(ServerResult::Success)
                 }
                 Err(e) => {
                     log::error!("TCP Error on {} => {}", server_address, e);
-                    return Ok(ServerResult::Unknown);
+                    Ok(ServerResult::Unknown)
                 }
-            };
-        },
+            }
+        }
         Err(_err) => {
             log::debug!("TCP address already used {}", server_address);
             Ok(ServerResult::PortAlreadyUsed)

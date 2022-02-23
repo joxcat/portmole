@@ -1,10 +1,14 @@
 use std::{
     net::{IpAddr, ToSocketAddrs},
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 use eyre::{Context, ContextCompat};
-use futures::future;
+use futures::{future, Future};
 use tokio::{net::UdpSocket, time};
 use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
@@ -43,39 +47,54 @@ pub async fn handle_client(args: ClientArgs) -> EyreResult<ClientResult> {
     log::debug!("Server IP resolved from {} to {}", args.server, address);
 
     let (min, max) = args.port_range;
+    let mut last_port_to_check = Some(min);
+    let currently_checking_count = Arc::new(AtomicU32::new(0));
+    let mut ports_futures: Vec<Box<dyn Future<Output = EyreResult<()>>>> =
+        Vec::with_capacity((max + 1 - min) as usize);
 
-    let mut port_count = (max + 1) - min;
-    let mut first_port = min;
+    while last_port_to_check.is_some() {
+        if currently_checking_count.load(Ordering::Relaxed) < MAX_OPEN_FILES_COUNT {
+            let last_port = last_port_to_check.unwrap();
+            let nb_ports_to_check =
+                MAX_OPEN_FILES_COUNT - currently_checking_count.load(Ordering::Relaxed);
 
-    while port_count > 0 {
-        let min = first_port;
-        let max = first_port
-            + if port_count > MAX_OPEN_FILES_COUNT {
-                MAX_OPEN_FILES_COUNT
+            (last_port..(last_port + nb_ports_to_check)).for_each(|port| {
+                ports_futures.push(Box::new(handle_port(
+                    address,
+                    port,
+                    Duration::from_millis(args.timeout),
+                    currently_checking_count.clone(),
+                )));
+            });
+
+            currently_checking_count.fetch_add(1, Ordering::Relaxed);
+
+            if last_port == max {
+                last_port_to_check = None;
+            } else if last_port + nb_ports_to_check > max {
+                last_port_to_check = Some(max);
             } else {
-                port_count
-            };
-
-        future::join_all((min..max).map(|port| {
-            spawn_tcp_udp_connection(address, port, Duration::from_millis(args.timeout))
-        }))
-        .await
-        .into_iter()
-        .try_for_each(|res| {
-            let res = res?;
-            let res_tcp = res.0.map(|_c| ());
-            let res_udp = res.1.map(|_c| ());
-            EyreResult::from_iter([res_tcp, res_udp])
-        })?;
-
-        first_port = max;
-        port_count -= max - min;
-
-        // Sleep some time to let the server spawn the listeners
-        time::sleep(Duration::from_millis(500)).await;
+                last_port_to_check = Some(last_port + nb_ports_to_check);
+            }
+        } else {
+            // Sleep some time to let the server spawn the listeners
+            time::sleep(Duration::from_millis(2000)).await;
+        }
     }
 
     Ok(ClientResult::Finished)
+}
+
+async fn handle_port(
+    address: IpAddr,
+    port: u32,
+    timeout: Duration,
+    currently_checking_count: Arc<AtomicU32>,
+) -> EyreResult<()> {
+    let _res = spawn_tcp_udp_connection(address, port, timeout).await;
+    currently_checking_count.fetch_sub(1, Ordering::Relaxed);
+
+    Ok(())
 }
 
 async fn spawn_tcp_udp_connection(
